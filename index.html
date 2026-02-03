@@ -120,6 +120,36 @@
             line-height: 1.6;
             z-index: 100;
         }
+
+        .context-menu {
+            position: fixed;
+            background: #2a2a2a;
+            border: 1px solid #4a4a4a;
+            border-radius: 4px;
+            padding: 4px 0;
+            z-index: 1000;
+            min-width: 150px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        }
+
+        .context-menu-item {
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .context-menu-item:hover {
+            background: #3a3a3a;
+        }
+
+        .context-menu-item .shortcut {
+            color: #666;
+            font-size: 12px;
+            margin-left: 16px;
+        }
     </style>
 </head>
 <body>
@@ -132,7 +162,7 @@
             <button id="rotate-l-btn" title="Rotate Left (L)">&circlearrowleft; Rot L</button>
             <button id="rotate-r-btn" title="Rotate Right (R)">&circlearrowright; Rot R</button>
             <button id="duplicate-btn" title="Duplicate (D)">⧉ Duplicate</button>
-            <button id="cutline-btn" title="Toggle Cut Line (C)">✂ Cut Line</button>
+            <button id="totop-btn" title="Bring to Top (T)">⬆ To Top</button>
             <button id="export-btn" title="Export (E)">⬇ Export</button>
             <button id="reset-view-btn">Reset View</button>
         </div>
@@ -156,7 +186,7 @@
 
     <div class="instructions">
         Scroll to zoom | Drag canvas to pan | Click image to select | Drag corners to resize<br>
-        H/V: flip | L/R: rotate | D: duplicate | C: cut line | S: swap side | E: export | Arrows: nudge | Del: remove
+        H/V: flip | L/R: rotate | D: duplicate | T: to top | E: export | Arrows: nudge | Del: remove | Right-click: menu
     </div>
 
     <script src="https://unpkg.com/konva@9/konva.min.js"></script>
@@ -185,6 +215,7 @@
         const transformer = new Konva.Transformer({
             keepRatio: true,
             enabledAnchors: ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
+            rotateEnabled: false, // Disable free rotation; use L/R keys for 90° increments
             boundBoxFunc: (oldBox, newBox) => {
                 // Minimum size constraint
                 if (newBox.width < 20 || newBox.height < 20) {
@@ -225,10 +256,14 @@
                 konvaImage.setAttr('originalWidth', img.width);
                 konvaImage.setAttr('originalHeight', img.height);
 
+                // Initialize crop bounds (non-destructive)
+                konvaImage.setAttr('cropBounds', { top: 0, right: 0, bottom: 0, left: 0 });
+
                 // Click to select
                 konvaImage.on('click tap', (e) => {
                     e.cancelBubble = true;
                     transformer.nodes([konvaImage]);
+                    updateCropHandles();
                     imageLayer.batchDraw();
                 });
 
@@ -236,12 +271,29 @@
                 konvaImage.on('dblclick dbltap', () => {
                     konvaImage.moveToTop();
                     transformer.moveToTop();
+                    updateCropHandles();
                     imageLayer.batchDraw();
+                });
+
+                // Right click for context menu
+                konvaImage.on('contextmenu', (e) => {
+                    e.evt.preventDefault();
+                    e.cancelBubble = true;
+                    transformer.nodes([konvaImage]);
+                    updateCropHandles();
+                    showContextMenu(e.evt.clientX, e.evt.clientY, konvaImage);
+                    imageLayer.batchDraw();
+                });
+
+                // Update crop handles when image is dragged
+                konvaImage.on('dragmove', () => {
+                    updateCropHandles();
                 });
 
                 imageLayer.add(konvaImage);
                 transformer.nodes([konvaImage]);
                 transformer.moveToTop();
+                updateCropHandles();
                 imageLayer.batchDraw();
 
                 imageCount++;
@@ -271,6 +323,7 @@
         stage.on('click tap', (e) => {
             if (e.target === stage) {
                 transformer.nodes([]);
+                removeCropHandles();
                 imageLayer.batchDraw();
             }
         });
@@ -301,15 +354,22 @@
                 y: pointer.y - mousePointTo.y * newScale
             };
             stage.position(newPos);
+            updateCropHandles();
             stage.batchDraw();
 
             zoomLevelSpan.textContent = Math.round(newScale * 100) + '%';
+        });
+
+        // Update crop handles when stage is dragged
+        stage.on('dragmove', () => {
+            updateCropHandles();
         });
 
         // Reset view
         resetViewBtn.addEventListener('click', () => {
             stage.scale({ x: 1, y: 1 });
             stage.position({ x: 0, y: 0 });
+            updateCropHandles();
             stage.batchDraw();
             zoomLevelSpan.textContent = '100%';
         });
@@ -324,6 +384,7 @@
             if (nodes.length === 0) return;
             const node = nodes[0];
             node.scaleX(node.scaleX() * -1);
+            updateCropHandles();
             imageLayer.batchDraw();
         }
 
@@ -332,6 +393,7 @@
             if (nodes.length === 0) return;
             const node = nodes[0];
             node.scaleY(node.scaleY() * -1);
+            updateCropHandles();
             imageLayer.batchDraw();
         }
 
@@ -340,6 +402,7 @@
             if (nodes.length === 0) return;
             const node = nodes[0];
             node.rotation(node.rotation() - 90);
+            updateCropHandles();
             imageLayer.batchDraw();
         }
 
@@ -348,6 +411,7 @@
             if (nodes.length === 0) return;
             const node = nodes[0];
             node.rotation(node.rotation() + 90);
+            updateCropHandles();
             imageLayer.batchDraw();
         }
 
@@ -365,23 +429,40 @@
             clone.setAttr('originalImage', node.getAttr('originalImage'));
             clone.setAttr('originalWidth', node.getAttr('originalWidth'));
             clone.setAttr('originalHeight', node.getAttr('originalHeight'));
+            clone.setAttr('cropBounds', { ...node.getAttr('cropBounds') });
 
             // Set up event handlers for the clone
             clone.on('click tap', (e) => {
                 e.cancelBubble = true;
                 transformer.nodes([clone]);
+                updateCropHandles();
                 imageLayer.batchDraw();
             });
 
             clone.on('dblclick dbltap', () => {
                 clone.moveToTop();
                 transformer.moveToTop();
+                updateCropHandles();
                 imageLayer.batchDraw();
+            });
+
+            clone.on('contextmenu', (e) => {
+                e.evt.preventDefault();
+                e.cancelBubble = true;
+                transformer.nodes([clone]);
+                updateCropHandles();
+                showContextMenu(e.evt.clientX, e.evt.clientY, clone);
+                imageLayer.batchDraw();
+            });
+
+            clone.on('dragmove', () => {
+                updateCropHandles();
             });
 
             imageLayer.add(clone);
             transformer.nodes([clone]);
             transformer.moveToTop();
+            updateCropHandles();
             imageLayer.batchDraw();
             imageCount++;
         }
@@ -393,184 +474,435 @@
         document.getElementById('rotate-r-btn').addEventListener('click', rotateRight);
         document.getElementById('duplicate-btn').addEventListener('click', duplicateImage);
 
-        // Cut line functionality
-        function toggleCutLine() {
+        // Bring to top functionality
+        function bringToTop() {
+            const nodes = transformer.nodes();
+            if (nodes.length === 0) return;
+            const node = nodes[0];
+            node.moveToTop();
+            transformer.moveToTop();
+            updateCropHandles();
+            imageLayer.batchDraw();
+        }
+
+        document.getElementById('totop-btn').addEventListener('click', bringToTop);
+
+        // Crop handles management
+        let cropHandles = [];
+        const HANDLE_SIZE = 12;
+        const HANDLE_COLOR = '#4285f4';
+        const HANDLE_STROKE = '#fff';
+
+        function createCropHandles(node) {
+            removeCropHandles();
+
+            // Store the node's _id for verification
+            const nodeId = node._id;
+
+            const handles = ['top', 'right', 'bottom', 'left'];
+            handles.forEach(position => {
+                const handle = new Konva.Rect({
+                    width: position === 'top' || position === 'bottom' ? HANDLE_SIZE * 2 : HANDLE_SIZE,
+                    height: position === 'left' || position === 'right' ? HANDLE_SIZE * 2 : HANDLE_SIZE,
+                    fill: HANDLE_COLOR,
+                    stroke: HANDLE_STROKE,
+                    strokeWidth: 1,
+                    cornerRadius: 2,
+                    draggable: true,
+                    name: `crop-handle-${position}`
+                });
+
+                handle.setAttr('handlePosition', position);
+                handle.setAttr('targetNodeId', nodeId);
+
+                // Set cursor based on handle position
+                const cursors = { top: 'ns-resize', bottom: 'ns-resize', left: 'ew-resize', right: 'ew-resize' };
+                handle.on('mouseenter', () => { stage.container().style.cursor = cursors[position]; });
+                handle.on('mouseleave', () => { stage.container().style.cursor = 'default'; });
+
+                // Prevent clicks on handles from affecting selection
+                handle.on('click tap', (e) => {
+                    e.cancelBubble = true;
+                });
+
+                handle.on('mousedown touchstart', (e) => {
+                    e.cancelBubble = true;
+                });
+
+                // Handle drag for cropping
+                handle.on('dragmove', (e) => {
+                    e.cancelBubble = true;
+                    // Verify we're still operating on the correct node
+                    const selectedNodes = transformer.nodes();
+                    if (selectedNodes.length === 0) return;
+                    const currentNode = selectedNodes[0];
+                    if (currentNode._id !== nodeId) return;
+
+                    updateCropFromHandle(currentNode, handle, position);
+                });
+
+                handle.on('dragend', (e) => {
+                    e.cancelBubble = true;
+                    const selectedNodes = transformer.nodes();
+                    if (selectedNodes.length === 0) return;
+                    const currentNode = selectedNodes[0];
+                    if (currentNode._id !== nodeId) return;
+
+                    positionCropHandles(currentNode);
+                });
+
+                imageLayer.add(handle);
+                cropHandles.push(handle);
+            });
+
+            positionCropHandles(node);
+        }
+
+        // Track which node the crop handles were created for
+        let cropHandlesNodeId = null;
+
+        function removeCropHandles() {
+            cropHandles.forEach(handle => handle.destroy());
+            cropHandles = [];
+            cropHandlesNodeId = null;
+        }
+
+        function positionCropHandles(node) {
+            if (cropHandles.length === 0) return;
+
+            // Get the node's bounding rectangle in stage coordinates (not screen)
+            const rect = node.getClientRect({ relativeTo: stage });
+            const stagePos = stage.position();
+            const stageScale = stage.scaleX();
+
+            cropHandles.forEach(handle => {
+                const pos = handle.getAttr('handlePosition');
+                let x, y;
+
+                // Position handles at edge midpoints (in stage coordinates)
+                switch (pos) {
+                    case 'top':
+                        x = rect.x + rect.width / 2 - (HANDLE_SIZE * 2) / 2;
+                        y = rect.y - HANDLE_SIZE / 2;
+                        break;
+                    case 'bottom':
+                        x = rect.x + rect.width / 2 - (HANDLE_SIZE * 2) / 2;
+                        y = rect.y + rect.height - HANDLE_SIZE / 2;
+                        break;
+                    case 'left':
+                        x = rect.x - HANDLE_SIZE / 2;
+                        y = rect.y + rect.height / 2 - (HANDLE_SIZE * 2) / 2;
+                        break;
+                    case 'right':
+                        x = rect.x + rect.width - HANDLE_SIZE / 2;
+                        y = rect.y + rect.height / 2 - (HANDLE_SIZE * 2) / 2;
+                        break;
+                }
+
+                handle.position({ x, y });
+            });
+
+            // Keep handles on top
+            cropHandles.forEach(h => h.moveToTop());
+        }
+
+        // Map visual handle position to source image edge, accounting for rotation and flip
+        function getSourceEdge(visualHandle, rotation, scaleX, scaleY) {
+            // Normalize rotation to 0, 90, 180, 270
+            let rot = ((rotation % 360) + 360) % 360;
+            rot = Math.round(rot / 90) * 90 % 360;
+
+            // Rotation mapping: visual -> source (before flip adjustment)
+            const rotationMaps = {
+                0:   { top: 'top', right: 'right', bottom: 'bottom', left: 'left' },
+                90:  { top: 'left', right: 'top', bottom: 'right', left: 'bottom' },
+                180: { top: 'bottom', right: 'left', bottom: 'top', left: 'right' },
+                270: { top: 'right', right: 'bottom', bottom: 'left', left: 'top' }
+            };
+
+            let sourceEdge = rotationMaps[rot][visualHandle];
+
+            // Apply flip: if flipped, swap the corresponding edges
+            if (scaleX < 0) {
+                if (sourceEdge === 'left') sourceEdge = 'right';
+                else if (sourceEdge === 'right') sourceEdge = 'left';
+            }
+            if (scaleY < 0) {
+                if (sourceEdge === 'top') sourceEdge = 'bottom';
+                else if (sourceEdge === 'bottom') sourceEdge = 'top';
+            }
+
+            return sourceEdge;
+        }
+
+        function updateCropFromHandle(node, handle, visualPosition) {
+            // Validate node exists and has required attributes
+            if (!node || node.isDestroyed || !node.getAttr('originalWidth')) return;
+
+            const originalWidth = node.getAttr('originalWidth');
+            const originalHeight = node.getAttr('originalHeight');
+            const currentCrop = node.getAttr('cropBounds') || { top: 0, right: 0, bottom: 0, left: 0 };
+
+            // Get the node's bounding rectangle in stage coordinates
+            const rect = node.getClientRect({ relativeTo: stage });
+            const handlePos = handle.position();
+            const scaleX = node.scaleX();
+            const scaleY = node.scaleY();
+            const absScaleX = Math.abs(scaleX);
+            const absScaleY = Math.abs(scaleY);
+            const rotation = node.rotation();
+
+            // Map visual handle to source edge
+            const sourceEdge = getSourceEdge(visualPosition, rotation, scaleX, scaleY);
+
+            // Calculate visual delta (how far handle moved from edge)
+            let visualDelta;
+            switch (visualPosition) {
+                case 'top':
+                    visualDelta = handlePos.y + HANDLE_SIZE / 2 - rect.y;
+                    break;
+                case 'bottom':
+                    visualDelta = rect.y + rect.height - handlePos.y - HANDLE_SIZE / 2;
+                    break;
+                case 'left':
+                    visualDelta = handlePos.x + HANDLE_SIZE / 2 - rect.x;
+                    break;
+                case 'right':
+                    visualDelta = rect.x + rect.width - handlePos.x - HANDLE_SIZE / 2;
+                    break;
+            }
+
+            // Convert visual delta to source coordinates
+            // For horizontal visual movement -> use absScaleX, for vertical -> use absScaleY
+            const isVisualHorizontal = (visualPosition === 'left' || visualPosition === 'right');
+            const scale = isVisualHorizontal ? absScaleX : absScaleY;
+            const sourceDelta = visualDelta / scale;
+
+            // Apply to the correct source edge
+            let newCrop = { ...currentCrop };
+            const minSize = 20;
+
+            switch (sourceEdge) {
+                case 'top':
+                    newCrop.top = Math.max(0, Math.min(originalHeight - currentCrop.bottom - minSize, currentCrop.top + sourceDelta));
+                    break;
+                case 'bottom':
+                    newCrop.bottom = Math.max(0, Math.min(originalHeight - currentCrop.top - minSize, currentCrop.bottom + sourceDelta));
+                    break;
+                case 'left':
+                    newCrop.left = Math.max(0, Math.min(originalWidth - currentCrop.right - minSize, currentCrop.left + sourceDelta));
+                    break;
+                case 'right':
+                    newCrop.right = Math.max(0, Math.min(originalWidth - currentCrop.left - minSize, currentCrop.right + sourceDelta));
+                    break;
+            }
+
+            // Pass both visual position (for handle repositioning) and source edge (for position anchoring)
+            applyCropBounds(node, newCrop, sourceEdge);
+        }
+
+        function applyCropBounds(node, cropBounds, sourceEdgeBeingCropped) {
+            // Validate node
+            if (!node || node.isDestroyed) return;
+
+            const originalWidth = node.getAttr('originalWidth');
+            const originalHeight = node.getAttr('originalHeight');
+
+            // Validate we have original dimensions
+            if (!originalWidth || !originalHeight) return;
+
+            const cropX = cropBounds.left;
+            const cropY = cropBounds.top;
+            const cropWidth = originalWidth - cropBounds.left - cropBounds.right;
+            const cropHeight = originalHeight - cropBounds.top - cropBounds.bottom;
+
+            // Validate crop dimensions are positive
+            if (cropWidth <= 0 || cropHeight <= 0) return;
+
+            // Determine which source edge to anchor (opposite of the one being cropped)
+            const anchorSourceEdge = {
+                'left': 'right',
+                'right': 'left',
+                'top': 'bottom',
+                'bottom': 'top'
+            }[sourceEdgeBeingCropped];
+
+            // Get visual bounding box BEFORE applying crop
+            const rectBefore = node.getClientRect({ relativeTo: stage });
+
+            // Store the crop bounds
+            node.setAttr('cropBounds', cropBounds);
+
+            // Apply the Konva crop
+            node.crop({ x: cropX, y: cropY, width: cropWidth, height: cropHeight });
+            node.width(cropWidth);
+            node.height(cropHeight);
+            node.offsetX(cropWidth / 2);
+            node.offsetY(cropHeight / 2);
+
+            // Get visual bounding box AFTER applying crop
+            const rectAfter = node.getClientRect({ relativeTo: stage });
+
+            // Adjust position to keep the anchor edge visually fixed
+            if (anchorSourceEdge) {
+                // Map the anchor SOURCE edge to VISUAL edge position
+                const rotation = node.rotation();
+                const scaleX = node.scaleX();
+                const scaleY = node.scaleY();
+
+                // Reverse mapping: source edge -> visual edge
+                let rot = ((rotation % 360) + 360) % 360;
+                rot = Math.round(rot / 90) * 90 % 360;
+
+                // This is the inverse of getSourceEdge
+                const visualMaps = {
+                    0:   { top: 'top', right: 'right', bottom: 'bottom', left: 'left' },
+                    90:  { top: 'right', right: 'bottom', bottom: 'left', left: 'top' },
+                    180: { top: 'bottom', right: 'left', bottom: 'top', left: 'right' },
+                    270: { top: 'left', right: 'top', bottom: 'right', left: 'bottom' }
+                };
+
+                let visualAnchor = visualMaps[rot][anchorSourceEdge];
+
+                // Account for flips
+                if (scaleX < 0) {
+                    if (visualAnchor === 'left') visualAnchor = 'right';
+                    else if (visualAnchor === 'right') visualAnchor = 'left';
+                }
+                if (scaleY < 0) {
+                    if (visualAnchor === 'top') visualAnchor = 'bottom';
+                    else if (visualAnchor === 'bottom') visualAnchor = 'top';
+                }
+
+                // Calculate how much to adjust based on visual anchor edge
+                let dx = 0, dy = 0;
+                switch (visualAnchor) {
+                    case 'left':
+                        dx = rectBefore.x - rectAfter.x;
+                        break;
+                    case 'right':
+                        dx = (rectBefore.x + rectBefore.width) - (rectAfter.x + rectAfter.width);
+                        break;
+                    case 'top':
+                        dy = rectBefore.y - rectAfter.y;
+                        break;
+                    case 'bottom':
+                        dy = (rectBefore.y + rectBefore.height) - (rectAfter.y + rectAfter.height);
+                        break;
+                }
+
+                node.x(node.x() + dx);
+                node.y(node.y() + dy);
+            }
+
+            imageLayer.batchDraw();
+        }
+
+        function resetCrop() {
             const nodes = transformer.nodes();
             if (nodes.length === 0) return;
             const node = nodes[0];
 
-            // Check if this image already has a cut line
-            const existingLine = node.getAttr('cutLine');
-            if (existingLine) {
-                // Remove cut line - restore original image
-                removeCutLine(node);
+            const originalWidth = node.getAttr('originalWidth');
+            const originalHeight = node.getAttr('originalHeight');
+
+            node.setAttr('cropBounds', { top: 0, right: 0, bottom: 0, left: 0 });
+            node.crop({ x: 0, y: 0, width: originalWidth, height: originalHeight });
+            node.width(originalWidth);
+            node.height(originalHeight);
+            node.offsetX(originalWidth / 2);
+            node.offsetY(originalHeight / 2);
+
+            positionCropHandles(node);
+            imageLayer.batchDraw();
+        }
+
+        function updateCropHandles() {
+            const nodes = transformer.nodes();
+            if (nodes.length === 0) {
+                removeCropHandles();
+                cropHandlesNodeId = null;
                 return;
             }
-
-            // Get image dimensions
-            const imgWidth = node.image().width;
-            const imgHeight = node.image().height;
-            const scale = Math.abs(node.scaleX());
-
-            // Store original position and dimensions
-            const centerX = node.x();
-            const centerY = node.y();
-            node.setAttr('originalImgWidth', imgWidth);
-            node.setAttr('originalCenterX', centerX);
-            node.setAttr('cropMode', 'right'); // 'right' = crop right edge, show left portion
-
-            // Create cut line
-            const lineHeight = imgHeight * scale * 1.2;
-            const cutLine = new Konva.Line({
-                points: [0, -lineHeight/2, 0, lineHeight/2],
-                stroke: '#ff4444',
-                strokeWidth: 4,
-                hitStrokeWidth: 20,
-                draggable: true
-            });
-
-            // Position line at center of image
-            cutLine.position({ x: centerX, y: centerY });
-            node.setAttr('cutLine', cutLine);
-            node.setAttr('cutLinePos', 0.5); // 0-1, position as fraction of image width
-
-            // Apply initial crop at center
-            applyCrop(node, 0.5);
-
-            // Update crop when line is dragged
-            cutLine.on('dragmove', () => {
-                updateCropFromLine(node, cutLine);
-            });
-
-            // Keep line with image when image moves
-            node.on('dragmove.cutline', () => {
-                updateLinePosition(node, cutLine);
-            });
-
-            imageLayer.add(cutLine);
-            cutLine.moveToTop();
-            imageLayer.batchDraw();
-        }
-
-        function removeCutLine(node) {
-            const cutLine = node.getAttr('cutLine');
-            if (cutLine) cutLine.destroy();
-            node.setAttr('cutLine', null);
-
-            const imgWidth = node.getAttr('originalImgWidth');
-            const imgHeight = node.image().height;
-            const centerX = node.getAttr('originalCenterX');
-
-            node.crop({ x: 0, y: 0, width: imgWidth, height: imgHeight });
-            node.width(imgWidth);
-            node.offsetX(imgWidth / 2);
-            node.x(centerX);
-            node.off('dragmove.cutline');
-            imageLayer.batchDraw();
-        }
-
-        function swapCropSide() {
-            const nodes = transformer.nodes();
-            if (nodes.length === 0) return;
             const node = nodes[0];
 
-            const cutLine = node.getAttr('cutLine');
-            if (!cutLine) return;
-
-            // Toggle crop mode
-            const currentMode = node.getAttr('cropMode');
-            const newMode = currentMode === 'right' ? 'left' : 'right';
-            node.setAttr('cropMode', newMode);
-
-            // Re-apply crop with current line position
-            const linePos = node.getAttr('cutLinePos');
-            applyCrop(node, linePos);
-        }
-
-        function applyCrop(node, linePos) {
-            const imgWidth = node.getAttr('originalImgWidth');
-            const imgHeight = node.image().height;
-            const scale = Math.abs(node.scaleX());
-            const mode = node.getAttr('cropMode');
-            const originalCenterX = node.getAttr('originalCenterX');
-
-            // linePos is 0-1, where the cut line is as fraction of image width
-            const linePixel = linePos * imgWidth;
-
-            let cropX, cropWidth, newOffsetX, newX;
-
-            if (mode === 'right') {
-                // Crop right edge: show left portion (0 to linePixel)
-                cropX = 0;
-                cropWidth = Math.max(10, linePixel);
-                newOffsetX = cropWidth / 2;
-                // Keep left edge fixed: leftEdge = originalCenterX - (imgWidth/2)*scale
-                const leftEdge = originalCenterX - (imgWidth / 2) * scale;
-                newX = leftEdge + newOffsetX * scale;
+            // Recreate handles if node changed, otherwise just reposition
+            if (cropHandlesNodeId !== node._id) {
+                createCropHandles(node);
+                cropHandlesNodeId = node._id;
             } else {
-                // Crop left edge: show right portion (linePixel to end)
-                cropX = linePixel;
-                cropWidth = Math.max(10, imgWidth - linePixel);
-                newOffsetX = cropWidth / 2;
-                // Keep right edge fixed: rightEdge = originalCenterX + (imgWidth/2)*scale
-                const rightEdge = originalCenterX + (imgWidth / 2) * scale;
-                newX = rightEdge - newOffsetX * scale;
+                positionCropHandles(node);
             }
-
-            node.crop({ x: cropX, y: 0, width: cropWidth, height: imgHeight });
-            node.width(cropWidth);
-            node.offsetX(newOffsetX);
-            node.x(newX);
-            node.setAttr('cutLinePos', linePos);
-
-            updateLinePosition(node, node.getAttr('cutLine'));
-            imageLayer.batchDraw();
         }
 
-        function updateCropFromLine(node, cutLine) {
-            const imgWidth = node.getAttr('originalImgWidth');
-            const scale = Math.abs(node.scaleX());
-            const originalCenterX = node.getAttr('originalCenterX');
+        // Update crop handles when transformer changes
+        transformer.on('transform', updateCropHandles);
+        transformer.on('transformend', updateCropHandles);
 
-            // Calculate line position as fraction of original image
-            const leftEdge = originalCenterX - (imgWidth / 2) * scale;
-            const lineX = cutLine.x();
-            const linePos = Math.max(0.02, Math.min(0.98, (lineX - leftEdge) / (imgWidth * scale)));
+        // Context menu
+        let contextMenu = null;
 
-            applyCrop(node, linePos);
+        function showContextMenu(x, y, node) {
+            hideContextMenu();
+
+            contextMenu = document.createElement('div');
+            contextMenu.className = 'context-menu';
+            contextMenu.innerHTML = `
+                <div class="context-menu-item" data-action="totop">Bring to Top <span class="shortcut">T</span></div>
+                <div class="context-menu-item" data-action="duplicate">Duplicate <span class="shortcut">D</span></div>
+                <div class="context-menu-item" data-action="fliph">Flip Horizontal <span class="shortcut">H</span></div>
+                <div class="context-menu-item" data-action="flipv">Flip Vertical <span class="shortcut">V</span></div>
+                <div class="context-menu-item" data-action="resetcrop">Reset Crop</div>
+                <div class="context-menu-item" data-action="delete">Delete <span class="shortcut">Del</span></div>
+            `;
+            contextMenu.style.left = x + 'px';
+            contextMenu.style.top = y + 'px';
+
+            contextMenu.addEventListener('click', (e) => {
+                const item = e.target.closest('.context-menu-item');
+                if (!item) return;
+
+                const action = item.dataset.action;
+                // Make sure the node is selected
+                transformer.nodes([node]);
+
+                switch (action) {
+                    case 'totop': bringToTop(); break;
+                    case 'duplicate': duplicateImage(); break;
+                    case 'fliph': flipHorizontal(); break;
+                    case 'flipv': flipVertical(); break;
+                    case 'resetcrop': resetCrop(); break;
+                    case 'delete':
+                        node.destroy();
+                        transformer.nodes([]);
+                        removeCropHandles();
+                        updateDropZoneVisibility();
+                        break;
+                }
+
+                hideContextMenu();
+                imageLayer.batchDraw();
+            });
+
+            document.body.appendChild(contextMenu);
+
+            // Close on click outside
+            setTimeout(() => {
+                document.addEventListener('click', hideContextMenu, { once: true });
+            }, 0);
         }
 
-        function updateLinePosition(node, cutLine) {
-            if (!cutLine) return;
-            const imgWidth = node.getAttr('originalImgWidth');
-            const scale = Math.abs(node.scaleX());
-            const linePos = node.getAttr('cutLinePos');
-
-            // Calculate where line should be based on current node position and linePos
-            const leftEdge = node.x() - node.offsetX() * scale;
-            const mode = node.getAttr('cropMode');
-
-            let lineX;
-            if (mode === 'right') {
-                // Left edge is fixed, line is at linePos from original left edge
-                const origLeftEdge = node.getAttr('originalCenterX') - (imgWidth / 2) * scale;
-                const dx = leftEdge - origLeftEdge;
-                node.setAttr('originalCenterX', node.getAttr('originalCenterX') + dx);
-                lineX = leftEdge + linePos * imgWidth * scale;
-            } else {
-                // Right edge is fixed
-                const rightEdge = node.x() + node.offsetX() * scale;
-                const origRightEdge = node.getAttr('originalCenterX') + (imgWidth / 2) * scale;
-                const dx = rightEdge - origRightEdge;
-                node.setAttr('originalCenterX', node.getAttr('originalCenterX') + dx);
-                lineX = rightEdge - (1 - linePos) * imgWidth * scale;
+        function hideContextMenu() {
+            if (contextMenu) {
+                contextMenu.remove();
+                contextMenu = null;
             }
-
-            cutLine.x(lineX);
-            cutLine.y(node.y());
         }
 
-        document.getElementById('cutline-btn').addEventListener('click', toggleCutLine);
+        // Prevent default context menu on canvas
+        container.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+        });
 
         // Export functionality
         function exportCanvas() {
@@ -694,20 +1026,25 @@
             switch (e.key) {
                 case 'ArrowLeft':
                     node.x(node.x() - moveAmount);
+                    updateCropHandles();
                     break;
                 case 'ArrowRight':
                     node.x(node.x() + moveAmount);
+                    updateCropHandles();
                     break;
                 case 'ArrowUp':
                     node.y(node.y() - moveAmount);
+                    updateCropHandles();
                     break;
                 case 'ArrowDown':
                     node.y(node.y() + moveAmount);
+                    updateCropHandles();
                     break;
                 case 'Delete':
                 case 'Backspace':
                     node.destroy();
                     transformer.nodes([]);
+                    removeCropHandles();
                     updateDropZoneVisibility();
                     break;
                 case 'h':
@@ -730,13 +1067,9 @@
                 case 'D':
                     duplicateImage();
                     break;
-                case 'c':
-                case 'C':
-                    toggleCutLine();
-                    break;
-                case 's':
-                case 'S':
-                    swapCropSide();
+                case 't':
+                case 'T':
+                    bringToTop();
                     break;
                 case 'e':
                 case 'E':

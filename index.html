@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Symmetries</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #1a1a1a;
+            color: #fff;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        header {
+            padding: 12px 20px;
+            background: #2a2a2a;
+            border-bottom: 1px solid #3a3a3a;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        h1 {
+            font-size: 18px;
+            font-weight: 500;
+        }
+
+        .toolbar {
+            display: flex;
+            gap: 8px;
+        }
+
+        button {
+            background: #3a3a3a;
+            color: #fff;
+            border: 1px solid #4a4a4a;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        button:hover {
+            background: #4a4a4a;
+        }
+
+        .zoom-info {
+            margin-left: auto;
+            font-size: 14px;
+            color: #888;
+        }
+
+        #canvas-container {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+        }
+
+        #drop-zone {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        #drop-zone.active {
+            background: rgba(66, 133, 244, 0.1);
+            border: 2px dashed #4285f4;
+        }
+
+        #drop-zone.empty {
+            pointer-events: auto;
+        }
+
+        .drop-hint {
+            text-align: center;
+            color: #666;
+        }
+
+        .drop-hint p {
+            margin: 8px 0;
+        }
+
+        .drop-hint .icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+
+        #file-input {
+            display: none;
+        }
+
+        .instructions {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 12px 16px;
+            border-radius: 6px;
+            font-size: 12px;
+            color: #888;
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Symmetries</h1>
+        <div class="toolbar">
+            <button id="add-btn">Add Image</button>
+            <button id="reset-view-btn">Reset View</button>
+        </div>
+        <div class="zoom-info">
+            Zoom: <span id="zoom-level">100%</span>
+        </div>
+    </header>
+
+    <div id="canvas-container">
+        <div id="drop-zone" class="empty">
+            <div class="drop-hint">
+                <div class="icon">+</div>
+                <p>Drop images here</p>
+                <p>or click Add Image</p>
+            </div>
+        </div>
+    </div>
+
+    <input type="file" id="file-input" accept="image/*" multiple>
+
+    <div class="instructions">
+        Scroll to zoom | Drag canvas to pan | Click image to select | Drag corners to resize
+    </div>
+
+    <script src="https://unpkg.com/konva@9/konva.min.js"></script>
+    <script>
+        const container = document.getElementById('canvas-container');
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        const addBtn = document.getElementById('add-btn');
+        const resetViewBtn = document.getElementById('reset-view-btn');
+        const zoomLevelSpan = document.getElementById('zoom-level');
+
+        // Initialize Konva stage
+        const stage = new Konva.Stage({
+            container: 'canvas-container',
+            width: container.clientWidth,
+            height: container.clientHeight,
+            draggable: true
+        });
+
+        // Layer for images
+        const imageLayer = new Konva.Layer();
+        stage.add(imageLayer);
+
+        // Transformer for selected images
+        const transformer = new Konva.Transformer({
+            keepRatio: true,
+            enabledAnchors: ['top-left', 'top-right', 'bottom-left', 'bottom-right'],
+            boundBoxFunc: (oldBox, newBox) => {
+                // Minimum size constraint
+                if (newBox.width < 20 || newBox.height < 20) {
+                    return oldBox;
+                }
+                return newBox;
+            }
+        });
+        imageLayer.add(transformer);
+
+        let imageCount = 0;
+
+        // Load image onto canvas
+        function addImage(src, fileName) {
+            const img = new Image();
+            img.onload = () => {
+                // Scale down if larger than viewport
+                let scale = 1;
+                const maxDim = Math.min(stage.width(), stage.height()) * 0.6;
+                if (img.width > maxDim || img.height > maxDim) {
+                    scale = maxDim / Math.max(img.width, img.height);
+                }
+
+                const konvaImage = new Konva.Image({
+                    image: img,
+                    x: stage.width() / 2 - (img.width * scale) / 2 + imageCount * 30,
+                    y: stage.height() / 2 - (img.height * scale) / 2 + imageCount * 30,
+                    scaleX: scale,
+                    scaleY: scale,
+                    draggable: true,
+                    name: fileName || `image-${imageCount}`
+                });
+
+                // Store original image data for full-res export later
+                konvaImage.setAttr('originalImage', img);
+                konvaImage.setAttr('originalWidth', img.width);
+                konvaImage.setAttr('originalHeight', img.height);
+
+                // Click to select
+                konvaImage.on('click tap', (e) => {
+                    e.cancelBubble = true;
+                    transformer.nodes([konvaImage]);
+                    imageLayer.batchDraw();
+                });
+
+                // Double click to bring to front
+                konvaImage.on('dblclick dbltap', () => {
+                    konvaImage.moveToTop();
+                    transformer.moveToTop();
+                    imageLayer.batchDraw();
+                });
+
+                imageLayer.add(konvaImage);
+                transformer.nodes([konvaImage]);
+                transformer.moveToTop();
+                imageLayer.batchDraw();
+
+                imageCount++;
+                updateDropZoneVisibility();
+            };
+            img.src = src;
+        }
+
+        // Handle file selection
+        function handleFiles(files) {
+            Array.from(files).forEach(file => {
+                if (!file.type.startsWith('image/')) return;
+                const reader = new FileReader();
+                reader.onload = (e) => addImage(e.target.result, file.name);
+                reader.readAsDataURL(file);
+            });
+        }
+
+        // Update drop zone visibility
+        function updateDropZoneVisibility() {
+            const hasImages = imageLayer.children.length > 1; // transformer is always there
+            dropZone.classList.toggle('empty', !hasImages);
+            dropZone.querySelector('.drop-hint').style.display = hasImages ? 'none' : 'block';
+        }
+
+        // Deselect when clicking on empty area
+        stage.on('click tap', (e) => {
+            if (e.target === stage) {
+                transformer.nodes([]);
+                imageLayer.batchDraw();
+            }
+        });
+
+        // Zoom with scroll wheel
+        stage.on('wheel', (e) => {
+            e.evt.preventDefault();
+
+            const oldScale = stage.scaleX();
+            const pointer = stage.getPointerPosition();
+
+            const mousePointTo = {
+                x: (pointer.x - stage.x()) / oldScale,
+                y: (pointer.y - stage.y()) / oldScale
+            };
+
+            const direction = e.evt.deltaY > 0 ? -1 : 1;
+            const scaleBy = 1.1;
+            let newScale = direction > 0 ? oldScale * scaleBy : oldScale / scaleBy;
+
+            // Clamp zoom level
+            newScale = Math.max(0.1, Math.min(10, newScale));
+
+            stage.scale({ x: newScale, y: newScale });
+
+            const newPos = {
+                x: pointer.x - mousePointTo.x * newScale,
+                y: pointer.y - mousePointTo.y * newScale
+            };
+            stage.position(newPos);
+            stage.batchDraw();
+
+            zoomLevelSpan.textContent = Math.round(newScale * 100) + '%';
+        });
+
+        // Reset view
+        resetViewBtn.addEventListener('click', () => {
+            stage.scale({ x: 1, y: 1 });
+            stage.position({ x: 0, y: 0 });
+            stage.batchDraw();
+            zoomLevelSpan.textContent = '100%';
+        });
+
+        // File input handling
+        addBtn.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+        // Drag and drop
+        container.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('active');
+        });
+
+        container.addEventListener('dragleave', (e) => {
+            if (!container.contains(e.relatedTarget)) {
+                dropZone.classList.remove('active');
+            }
+        });
+
+        container.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('active');
+            handleFiles(e.dataTransfer.files);
+        });
+
+        // Resize handling
+        window.addEventListener('resize', () => {
+            stage.width(container.clientWidth);
+            stage.height(container.clientHeight);
+            stage.batchDraw();
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            const selected = transformer.nodes();
+            if (selected.length === 0) return;
+
+            const node = selected[0];
+            const moveAmount = e.shiftKey ? 10 : 1;
+
+            switch (e.key) {
+                case 'ArrowLeft':
+                    node.x(node.x() - moveAmount);
+                    break;
+                case 'ArrowRight':
+                    node.x(node.x() + moveAmount);
+                    break;
+                case 'ArrowUp':
+                    node.y(node.y() - moveAmount);
+                    break;
+                case 'ArrowDown':
+                    node.y(node.y() + moveAmount);
+                    break;
+                case 'Delete':
+                case 'Backspace':
+                    node.destroy();
+                    transformer.nodes([]);
+                    updateDropZoneVisibility();
+                    break;
+                default:
+                    return;
+            }
+            e.preventDefault();
+            imageLayer.batchDraw();
+        });
+    </script>
+</body>
+</html>

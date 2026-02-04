@@ -1,4 +1,4 @@
-# Symmetries
+# Montage
 
 A browser-based image composition tool for combining, blending, and manipulating photos.
 

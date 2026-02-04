@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Symmetries</title>
+    <title>Montage</title>
     <style>
         * {
             margin: 0;
@@ -199,7 +199,7 @@
 </head>
 <body>
     <header>
-        <h1>Symmetries</h1>
+        <h1>Montage</h1>
         <div class="toolbar">
             <button id="add-btn">Add Image</button>
             <button id="save-btn" title="Save (S)">⬇ Save</button>
@@ -1141,7 +1141,7 @@
 
             // Download
             const link = document.createElement('a');
-            link.download = 'symmetries-export.jpg';
+            link.download = 'montage-export.jpg';
             link.href = exportCanvas.toDataURL('image/jpeg', 0.92);
             link.click();
         }

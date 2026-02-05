@@ -43,6 +43,13 @@ let progressModal = null;
 let opacityInput = { firstDigit: null, timeout: null };
 let opacityLabel = null;
 
+// Undo/Redo State
+const undoStack = [];
+const redoStack = [];
+const MAX_UNDO_LEVELS = 30;
+let nudgeUndoTimeout = null;
+let nudgeUndoPushed = false;
+
 // Constants
 const HANDLE_SIZE = 12;
 const HANDLE_COLOR = '#4285f4';
@@ -63,9 +70,19 @@ const blendModes = [
 // Utility Functions
 // ============================================
 
+function generateImageId() {
+    return 'img_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9);
+}
+
 function getSelectedImage() {
     const nodes = transformer.nodes();
     return nodes.length > 0 ? nodes[0] : null;
+}
+
+function findImageById(imageId) {
+    return imageLayer.children.find(child =>
+        child instanceof Konva.Image && child.getAttr('imageId') === imageId
+    );
 }
 
 function getViewportCenter() {
@@ -74,6 +91,163 @@ function getViewportCenter() {
         y: (stage.height() / 2 - stage.y()) / stage.scaleY()
     };
 }
+
+// ============================================
+// State Management (Undo/Redo Core)
+// ============================================
+
+function captureState() {
+    const images = imageLayer.children.filter(child => child instanceof Konva.Image);
+    const sortedImages = [...images].sort((a, b) => a.zIndex() - b.zIndex());
+
+    return {
+        version: 2,
+        images: sortedImages.map((img, index) => ({
+            id: img.getAttr('imageId'),
+            imageRef: img.getAttr('originalImage') || img.image(),
+            originalWidth: img.getAttr('originalWidth'),
+            originalHeight: img.getAttr('originalHeight'),
+            x: img.x(),
+            y: img.y(),
+            scaleX: img.scaleX(),
+            scaleY: img.scaleY(),
+            rotation: img.rotation(),
+            cropBounds: { ...img.getAttr('cropBounds') },
+            blendMode: img.getAttr('blendMode') || 'source-over',
+            opacity: img.opacity(),
+            name: img.name(),
+            zIndex: index
+        }))
+    };
+}
+
+function createKonvaImageFromState(imgState) {
+    const originalWidth = imgState.originalWidth;
+    const originalHeight = imgState.originalHeight;
+    const cropBounds = imgState.cropBounds || { top: 0, right: 0, bottom: 0, left: 0 };
+
+    const cropX = cropBounds.left;
+    const cropY = cropBounds.top;
+    const cropWidth = originalWidth - cropBounds.left - cropBounds.right;
+    const cropHeight = originalHeight - cropBounds.top - cropBounds.bottom;
+
+    const konvaImage = new Konva.Image({
+        image: imgState.imageRef,
+        x: imgState.x,
+        y: imgState.y,
+        scaleX: imgState.scaleX,
+        scaleY: imgState.scaleY,
+        rotation: imgState.rotation,
+        draggable: true,
+        name: imgState.name
+    });
+
+    konvaImage.setAttr('imageId', imgState.id);
+    konvaImage.setAttr('originalImage', imgState.imageRef);
+    konvaImage.setAttr('originalWidth', originalWidth);
+    konvaImage.setAttr('originalHeight', originalHeight);
+    konvaImage.setAttr('cropBounds', cropBounds);
+    konvaImage.setAttr('blendMode', imgState.blendMode);
+    konvaImage.globalCompositeOperation(imgState.blendMode);
+    konvaImage.opacity(imgState.opacity);
+
+    if (cropWidth > 0 && cropHeight > 0) {
+        konvaImage.crop({ x: cropX, y: cropY, width: cropWidth, height: cropHeight });
+        konvaImage.width(cropWidth);
+        konvaImage.height(cropHeight);
+        konvaImage.offsetX(cropWidth / 2);
+        konvaImage.offsetY(cropHeight / 2);
+    } else {
+        konvaImage.offsetX(originalWidth / 2);
+        konvaImage.offsetY(originalHeight / 2);
+    }
+
+    return konvaImage;
+}
+
+function restoreState(state) {
+    // Get currently selected image ID before destroying
+    const selectedNode = getSelectedImage();
+    const selectedId = selectedNode ? selectedNode.getAttr('imageId') : null;
+
+    // Remove crop handles and opacity label
+    removeCropHandles();
+    removeOpacityLabel();
+
+    // Destroy all existing images
+    const existingImages = imageLayer.children.filter(child => child instanceof Konva.Image);
+    existingImages.forEach(img => img.destroy());
+
+    // Recreate images from state
+    const sortedImages = [...state.images].sort((a, b) => a.zIndex - b.zIndex);
+    sortedImages.forEach(imgState => {
+        const konvaImage = createKonvaImageFromState(imgState);
+        setupImageHandlers(konvaImage);
+        imageLayer.add(konvaImage);
+    });
+
+    // Restore selection if the image still exists
+    if (selectedId) {
+        const restoredNode = findImageById(selectedId);
+        if (restoredNode) {
+            transformer.nodes([restoredNode]);
+            updateCropHandles();
+        } else {
+            transformer.nodes([]);
+        }
+    } else {
+        transformer.nodes([]);
+    }
+
+    transformer.moveToTop();
+    updateDropZoneVisibility();
+    imageLayer.batchDraw();
+}
+
+// ============================================
+// Undo/Redo Operations
+// ============================================
+
+function pushUndo() {
+    const state = captureState();
+    undoStack.push(state);
+
+    // Limit stack size
+    while (undoStack.length > MAX_UNDO_LEVELS) {
+        undoStack.shift();
+    }
+
+    // Clear redo stack on new action
+    redoStack.length = 0;
+}
+
+function undo() {
+    if (undoStack.length === 0) return;
+
+    // Save current state to redo stack
+    const currentState = captureState();
+    redoStack.push(currentState);
+
+    // Pop and restore previous state
+    const previousState = undoStack.pop();
+    restoreState(previousState);
+}
+
+function redo() {
+    if (redoStack.length === 0) return;
+
+    // Save current state to undo stack
+    const currentState = captureState();
+    undoStack.push(currentState);
+
+    // Pop and restore redo state
+    const nextState = redoStack.pop();
+    restoreState(nextState);
+}
+
+// ============================================
+// Image Event Handlers
+// ============================================
 
 function setupImageHandlers(konvaImage) {
     konvaImage.on('click tap', (e) => {
@@ -84,6 +258,7 @@ function setupImageHandlers(konvaImage) {
     });
 
     konvaImage.on('dblclick dbltap', () => {
+        pushUndo();
         konvaImage.moveToTop();
         transformer.moveToTop();
         updateCropHandles();
@@ -99,6 +274,11 @@ function setupImageHandlers(konvaImage) {
         imageLayer.batchDraw();
     });
 
+    // Push undo on drag start (continuous action)
+    konvaImage.on('dragstart', () => {
+        pushUndo();
+    });
+
     konvaImage.on('dragmove', () => {
         updateCropHandles();
     });
@@ -111,6 +291,9 @@ function setupImageHandlers(konvaImage) {
 function addImage(src, fileName) {
     const img = new Image();
     img.onload = () => {
+        // Push undo before adding new image
+        pushUndo();
+
         let scale = 1;
         const maxDim = Math.min(stage.width(), stage.height()) * 0.6;
         if (img.width > maxDim || img.height > maxDim) {
@@ -131,6 +314,7 @@ function addImage(src, fileName) {
             name: fileName || `image-${imageCount}`
         });
 
+        konvaImage.setAttr('imageId', generateImageId());
         konvaImage.setAttr('originalImage', img);
         konvaImage.setAttr('originalWidth', img.width);
         konvaImage.setAttr('originalHeight', img.height);
@@ -236,6 +420,7 @@ function updateDropZoneVisibility() {
 function flipHorizontal() {
     const node = getSelectedImage();
     if (!node) return;
+    pushUndo();
     node.scaleX(node.scaleX() * -1);
     updateCropHandles();
     imageLayer.batchDraw();
@@ -244,6 +429,7 @@ function flipHorizontal() {
 function flipVertical() {
     const node = getSelectedImage();
     if (!node) return;
+    pushUndo();
     node.scaleY(node.scaleY() * -1);
     updateCropHandles();
     imageLayer.batchDraw();
@@ -252,6 +438,7 @@ function flipVertical() {
 function rotateLeft() {
     const node = getSelectedImage();
     if (!node) return;
+    pushUndo();
     node.rotation(node.rotation() - 90);
     updateCropHandles();
     imageLayer.batchDraw();
@@ -260,6 +447,7 @@ function rotateLeft() {
 function rotateRight() {
     const node = getSelectedImage();
     if (!node) return;
+    pushUndo();
     node.rotation(node.rotation() + 90);
     updateCropHandles();
     imageLayer.batchDraw();
@@ -268,12 +456,14 @@ function rotateRight() {
 function duplicateImage() {
     const node = getSelectedImage();
     if (!node) return;
+    pushUndo();
 
     const clone = node.clone({
         x: node.x() + 30,
         y: node.y() + 30
     });
 
+    clone.setAttr('imageId', generateImageId());
     clone.setAttr('originalImage', node.getAttr('originalImage'));
     clone.setAttr('originalWidth', node.getAttr('originalWidth'));
     clone.setAttr('originalHeight', node.getAttr('originalHeight'));
@@ -294,6 +484,7 @@ function duplicateImage() {
 function bringToTop() {
     const node = getSelectedImage();
     if (!node) return;
+    pushUndo();
     node.moveToTop();
     transformer.moveToTop();
     updateCropHandles();
@@ -303,6 +494,7 @@ function bringToTop() {
 function sendToBottom() {
     const node = getSelectedImage();
     if (!node) return;
+    pushUndo();
     node.moveToBottom();
     transformer.moveToTop();
     updateCropHandles();
@@ -312,6 +504,7 @@ function sendToBottom() {
 function deleteSelected() {
     const node = getSelectedImage();
     if (!node) return;
+    pushUndo();
     node.destroy();
     transformer.nodes([]);
     removeCropHandles();
@@ -327,6 +520,7 @@ function deleteSelected() {
 function setBlendMode(mode) {
     const node = getSelectedImage();
     if (!node) return;
+    pushUndo();
     node.setAttr('blendMode', mode);
     node.globalCompositeOperation(mode);
     imageLayer.batchDraw();
@@ -350,6 +544,7 @@ function cycleBlendMode() {
 function setOpacity(percent) {
     const node = getSelectedImage();
     if (!node) return;
+    pushUndo();
     const opacity = Math.max(0, Math.min(100, percent)) / 100;
     node.opacity(opacity);
     updateOpacityLabel(node);
@@ -416,6 +611,11 @@ function createCropHandles(node) {
 
         handle.on('click tap', (e) => { e.cancelBubble = true; });
         handle.on('mousedown touchstart', (e) => { e.cancelBubble = true; });
+
+        // Push undo on crop handle drag start
+        handle.on('dragstart', () => {
+            pushUndo();
+        });
 
         handle.on('dragmove', (e) => {
             e.cancelBubble = true;
@@ -651,6 +851,7 @@ function applyCropBounds(node, cropBounds, sourceEdgeBeingCropped) {
 function resetCrop() {
     const node = getSelectedImage();
     if (!node) return;
+    pushUndo();
 
     const originalWidth = node.getAttr('originalWidth');
     const originalHeight = node.getAttr('originalHeight');
@@ -953,9 +1154,67 @@ function hideProgressModal() {
 // Project Save/Load
 // ============================================
 
+async function serializeStateToZip(state) {
+    const zip = new JSZip();
+    const imgFolder = zip.folder('images');
+
+    const projectData = {
+        version: 2,
+        images: []
+    };
+
+    for (let i = 0; i < state.images.length; i++) {
+        const imgState = state.images[i];
+        const filename = `${i}.png`;
+
+        updateProgress(
+            Math.round((i / state.images.length) * 80),
+            `Processing image ${i + 1} of ${state.images.length}...`
+        );
+
+        const canvas = document.createElement('canvas');
+        canvas.width = imgState.imageRef.width;
+        canvas.height = imgState.imageRef.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(imgState.imageRef, 0, 0);
+
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        imgFolder.file(filename, blob);
+
+        projectData.images.push({
+            filename: filename,
+            id: imgState.id,
+            x: imgState.x,
+            y: imgState.y,
+            scaleX: imgState.scaleX,
+            scaleY: imgState.scaleY,
+            rotation: imgState.rotation,
+            cropBounds: imgState.cropBounds,
+            blendMode: imgState.blendMode,
+            opacity: imgState.opacity,
+            originalWidth: imgState.originalWidth,
+            originalHeight: imgState.originalHeight,
+            name: imgState.name,
+            zIndex: imgState.zIndex
+        });
+    }
+
+    zip.file('project.json', JSON.stringify(projectData, null, 2));
+
+    updateProgress(90, 'Creating archive...');
+
+    return await zip.generateAsync({
+        type: 'blob',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 6 }
+    }, (metadata) => {
+        updateProgress(90 + Math.round(metadata.percent * 0.1), 'Creating archive...');
+    });
+}
+
 async function saveProject() {
-    const images = imageLayer.children.filter(child => child instanceof Konva.Image);
-    if (images.length === 0) {
+    const state = captureState();
+    if (state.images.length === 0) {
         alert('No images to save');
         return;
     }
@@ -963,63 +1222,7 @@ async function saveProject() {
     showProgressModal('Saving Project...');
 
     try {
-        const zip = new JSZip();
-        const imgFolder = zip.folder('images');
-        const projectData = {
-            version: 1,
-            stagePosition: { x: stage.x(), y: stage.y() },
-            stageScale: stage.scaleX(),
-            images: []
-        };
-
-        const sortedImages = [...images].sort((a, b) => a.zIndex() - b.zIndex());
-
-        for (let i = 0; i < sortedImages.length; i++) {
-            const img = sortedImages[i];
-            const originalImg = img.getAttr('originalImage') || img.image();
-            const filename = `${i}.png`;
-
-            updateProgress(
-                Math.round((i / sortedImages.length) * 80),
-                `Processing image ${i + 1} of ${sortedImages.length}...`
-            );
-
-            const canvas = document.createElement('canvas');
-            canvas.width = originalImg.width;
-            canvas.height = originalImg.height;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(originalImg, 0, 0);
-
-            const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-            imgFolder.file(filename, blob);
-
-            projectData.images.push({
-                filename: filename,
-                x: img.x(),
-                y: img.y(),
-                scaleX: img.scaleX(),
-                scaleY: img.scaleY(),
-                rotation: img.rotation(),
-                cropBounds: img.getAttr('cropBounds') || { top: 0, right: 0, bottom: 0, left: 0 },
-                blendMode: img.getAttr('blendMode') || 'source-over',
-                opacity: img.opacity(),
-                originalWidth: img.getAttr('originalWidth'),
-                originalHeight: img.getAttr('originalHeight'),
-                name: img.name()
-            });
-        }
-
-        zip.file('project.json', JSON.stringify(projectData, null, 2));
-
-        updateProgress(90, 'Creating archive...');
-
-        const content = await zip.generateAsync({
-            type: 'blob',
-            compression: 'DEFLATE',
-            compressionOptions: { level: 6 }
-        }, (metadata) => {
-            updateProgress(90 + Math.round(metadata.percent * 0.1), 'Creating archive...');
-        });
+        const content = await serializeStateToZip(state);
 
         updateProgress(100, 'Done!');
 
@@ -1038,30 +1241,90 @@ async function saveProject() {
     }
 }
 
+async function deserializeStateFromZip(file) {
+    const zip = await JSZip.loadAsync(file);
+    const projectFile = zip.file('project.json');
+
+    if (!projectFile) {
+        throw new Error('Invalid .montage file: missing project.json');
+    }
+
+    const projectData = JSON.parse(await projectFile.async('string'));
+    const imgFolder = zip.folder('images');
+    const totalImages = projectData.images.length;
+
+    const state = {
+        version: 2,
+        images: []
+    };
+
+    for (let i = 0; i < totalImages; i++) {
+        const imgData = projectData.images[i];
+
+        updateProgress(
+            20 + Math.round((i / totalImages) * 75),
+            `Loading image ${i + 1} of ${totalImages}...`
+        );
+
+        const imgFile = imgFolder.file(imgData.filename);
+        if (!imgFile) {
+            console.warn(`Missing image: ${imgData.filename}`);
+            continue;
+        }
+
+        const imgBlob = await imgFile.async('blob');
+        const imgUrl = URL.createObjectURL(imgBlob);
+
+        const imageRef = await new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => {
+                URL.revokeObjectURL(imgUrl);
+                resolve(img);
+            };
+            img.onerror = () => {
+                URL.revokeObjectURL(imgUrl);
+                reject(new Error(`Failed to load image: ${imgData.filename}`));
+            };
+            img.src = imgUrl;
+        });
+
+        state.images.push({
+            id: imgData.id || generateImageId(), // Generate new ID if not present (v1 files)
+            imageRef: imageRef,
+            originalWidth: imgData.originalWidth || imageRef.width,
+            originalHeight: imgData.originalHeight || imageRef.height,
+            x: imgData.x,
+            y: imgData.y,
+            scaleX: imgData.scaleX,
+            scaleY: imgData.scaleY,
+            rotation: imgData.rotation,
+            cropBounds: imgData.cropBounds || { top: 0, right: 0, bottom: 0, left: 0 },
+            blendMode: imgData.blendMode || 'source-over',
+            opacity: imgData.opacity !== undefined ? imgData.opacity : 1,
+            name: imgData.name || `image-${i}`,
+            zIndex: imgData.zIndex !== undefined ? imgData.zIndex : i
+        });
+    }
+
+    return state;
+}
+
 async function loadProject(file) {
     showProgressModal('Adding from Project...');
 
     try {
         updateProgress(10, 'Reading archive...');
-
-        const zip = await JSZip.loadAsync(file);
-        const projectFile = zip.file('project.json');
-
-        if (!projectFile) {
-            throw new Error('Invalid .montage file: missing project.json');
-        }
-
-        const projectData = JSON.parse(await projectFile.async('string'));
-
         updateProgress(20, 'Loading images...');
+
+        const loadedState = await deserializeStateFromZip(file);
 
         // Calculate offset to center loaded images in current viewport
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const imgData of projectData.images) {
-            minX = Math.min(minX, imgData.x);
-            minY = Math.min(minY, imgData.y);
-            maxX = Math.max(maxX, imgData.x);
-            maxY = Math.max(maxY, imgData.y);
+        for (const imgState of loadedState.images) {
+            minX = Math.min(minX, imgState.x);
+            minY = Math.min(minY, imgState.y);
+            maxX = Math.max(maxX, imgState.x);
+            maxY = Math.max(maxY, imgState.y);
         }
         const savedCenterX = (minX + maxX) / 2;
         const savedCenterY = (minY + maxY) / 2;
@@ -1070,90 +1333,35 @@ async function loadProject(file) {
         const offsetX = center.x - savedCenterX;
         const offsetY = center.y - savedCenterY;
 
-        const imgFolder = zip.folder('images');
-        const totalImages = projectData.images.length;
+        // Offset images to viewport center and assign new IDs
+        loadedState.images.forEach(imgState => {
+            imgState.x += offsetX;
+            imgState.y += offsetY;
+            imgState.id = generateImageId(); // Always assign new ID on load
+        });
 
-        for (let i = 0; i < totalImages; i++) {
-            const imgData = projectData.images[i];
+        // Push undo before merging
+        pushUndo();
 
-            updateProgress(
-                20 + Math.round((i / totalImages) * 75),
-                `Loading image ${i + 1} of ${totalImages}...`
-            );
+        // Merge with current state - add loaded images to canvas
+        const currentState = captureState();
+        const maxCurrentZIndex = currentState.images.length > 0
+            ? Math.max(...currentState.images.map(img => img.zIndex))
+            : -1;
 
-            const imgFile = imgFolder.file(imgData.filename);
-            if (!imgFile) {
-                console.warn(`Missing image: ${imgData.filename}`);
-                continue;
-            }
+        // Adjust zIndex of loaded images to be above current images
+        loadedState.images.forEach((imgState, i) => {
+            imgState.zIndex = maxCurrentZIndex + 1 + i;
+        });
 
-            const imgBlob = await imgFile.async('blob');
-            const imgUrl = URL.createObjectURL(imgBlob);
+        // Merge states
+        const mergedState = {
+            version: 2,
+            images: [...currentState.images, ...loadedState.images]
+        };
 
-            await new Promise((resolve, reject) => {
-                const img = new Image();
-                img.onload = () => {
-                    const konvaImage = new Konva.Image({
-                        image: img,
-                        x: imgData.x + offsetX,
-                        y: imgData.y + offsetY,
-                        scaleX: imgData.scaleX,
-                        scaleY: imgData.scaleY,
-                        rotation: imgData.rotation,
-                        draggable: true,
-                        name: imgData.name || `image-${i}`
-                    });
-
-                    konvaImage.setAttr('originalImage', img);
-                    konvaImage.setAttr('originalWidth', imgData.originalWidth || img.width);
-                    konvaImage.setAttr('originalHeight', imgData.originalHeight || img.height);
-
-                    const cropBounds = imgData.cropBounds || { top: 0, right: 0, bottom: 0, left: 0 };
-                    konvaImage.setAttr('cropBounds', cropBounds);
-
-                    const originalWidth = imgData.originalWidth || img.width;
-                    const originalHeight = imgData.originalHeight || img.height;
-                    const cropX = cropBounds.left;
-                    const cropY = cropBounds.top;
-                    const cropWidth = originalWidth - cropBounds.left - cropBounds.right;
-                    const cropHeight = originalHeight - cropBounds.top - cropBounds.bottom;
-
-                    if (cropWidth > 0 && cropHeight > 0) {
-                        konvaImage.crop({ x: cropX, y: cropY, width: cropWidth, height: cropHeight });
-                        konvaImage.width(cropWidth);
-                        konvaImage.height(cropHeight);
-                        konvaImage.offsetX(cropWidth / 2);
-                        konvaImage.offsetY(cropHeight / 2);
-                    } else {
-                        konvaImage.offsetX(img.width / 2);
-                        konvaImage.offsetY(img.height / 2);
-                    }
-
-                    const blendMode = imgData.blendMode || 'source-over';
-                    konvaImage.setAttr('blendMode', blendMode);
-                    konvaImage.globalCompositeOperation(blendMode);
-
-                    const opacity = imgData.opacity !== undefined ? imgData.opacity : 1;
-                    konvaImage.opacity(opacity);
-
-                    setupImageHandlers(konvaImage);
-
-                    imageLayer.add(konvaImage);
-                    URL.revokeObjectURL(imgUrl);
-                    resolve();
-                };
-                img.onerror = () => {
-                    URL.revokeObjectURL(imgUrl);
-                    reject(new Error(`Failed to load image: ${imgData.filename}`));
-                };
-                img.src = imgUrl;
-            });
-        }
-
-        transformer.moveToTop();
-        imageLayer.batchDraw();
-        updateDropZoneVisibility();
-        imageCount += totalImages;
+        restoreState(mergedState);
+        imageCount += loadedState.images.length;
 
         updateProgress(100, 'Done!');
         setTimeout(hideProgressModal, 500);
@@ -1213,6 +1421,9 @@ stage.on('dragmove', () => {
 });
 
 // Transformer events
+transformer.on('transformstart', () => {
+    pushUndo();
+});
 transformer.on('transform', updateCropHandles);
 transformer.on('transformend', updateCropHandles);
 
@@ -1278,6 +1489,24 @@ window.addEventListener('resize', () => {
 
 // Keyboard shortcuts
 document.addEventListener('keydown', (e) => {
+    // Undo: Ctrl+Z
+    if (e.key === 'z' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+        return;
+    }
+    // Redo: Ctrl+Shift+Z or Ctrl+Y
+    if ((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey) && e.shiftKey) {
+        e.preventDefault();
+        redo();
+        return;
+    }
+    if (e.key === 'y' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        redo();
+        return;
+    }
+
     if ((e.key === 's' || e.key === 'S') && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         saveProject();
@@ -1310,22 +1539,38 @@ document.addEventListener('keydown', (e) => {
     const moveAmount = e.ctrlKey ? 10 : 1;
     const shouldSnap = !e.shiftKey;
 
+    // Helper for debounced nudge undo
+    function handleNudge(axis, amount) {
+        // Push undo once at start of nudge sequence
+        if (!nudgeUndoPushed) {
+            pushUndo();
+            nudgeUndoPushed = true;
+        }
+        // Reset idle timer - after 500ms without nudge, allow new undo
+        if (nudgeUndoTimeout) clearTimeout(nudgeUndoTimeout);
+        nudgeUndoTimeout = setTimeout(() => {
+            nudgeUndoPushed = false;
+        }, 500);
+
+        const current = axis === 'x' ? node.x() : node.y();
+        const newVal = shouldSnap ? Math.round(current + amount) : current + amount;
+        if (axis === 'x') node.x(newVal);
+        else node.y(newVal);
+        updateCropHandles();
+    }
+
     switch (e.key) {
         case 'ArrowLeft':
-            node.x(shouldSnap ? Math.round(node.x() - moveAmount) : node.x() - moveAmount);
-            updateCropHandles();
+            handleNudge('x', -moveAmount);
             break;
         case 'ArrowRight':
-            node.x(shouldSnap ? Math.round(node.x() + moveAmount) : node.x() + moveAmount);
-            updateCropHandles();
+            handleNudge('x', moveAmount);
             break;
         case 'ArrowUp':
-            node.y(shouldSnap ? Math.round(node.y() - moveAmount) : node.y() - moveAmount);
-            updateCropHandles();
+            handleNudge('y', -moveAmount);
             break;
         case 'ArrowDown':
-            node.y(shouldSnap ? Math.round(node.y() + moveAmount) : node.y() + moveAmount);
-            updateCropHandles();
+            handleNudge('y', moveAmount);
             break;
         case 'Delete':
         case 'Backspace':

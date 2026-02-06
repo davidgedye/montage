@@ -1502,6 +1502,33 @@ function toggleBackground() {
     document.body.classList.toggle('light-bg');
 }
 
+function clearCanvas() {
+    if (hasUnsavedChanges) {
+        if (!confirm('You have unsaved changes. Are you sure you want to clear everything?')) {
+            return;
+        }
+    }
+
+    // Destroy all images
+    const images = imageLayer.children.filter(child => child instanceof Konva.Image);
+    images.forEach(img => img.destroy());
+
+    // Clear selection
+    transformer.nodes([]);
+
+    // Clear undo/redo stacks
+    undoStack.length = 0;
+    redoStack.length = 0;
+
+    // Reset unsaved changes flag
+    hasUnsavedChanges = false;
+
+    // Show drop zone
+    dropZone.classList.add('empty');
+
+    imageLayer.batchDraw();
+}
+
 document.getElementById('flip-h-btn').addEventListener('click', flipHorizontal);
 document.getElementById('flip-v-btn').addEventListener('click', flipVertical);
 document.getElementById('rotate-l-btn').addEventListener('click', rotateLeft);
@@ -1511,6 +1538,7 @@ document.getElementById('totop-btn').addEventListener('click', bringToTop);
 document.getElementById('tobottom-btn').addEventListener('click', sendToBottom);
 document.getElementById('save-btn').addEventListener('click', exportCanvas);
 document.getElementById('save-project-btn').addEventListener('click', saveProject);
+document.getElementById('clear-btn').addEventListener('click', clearCanvas);
 
 // Prevent default context menu on canvas
 container.addEventListener('contextmenu', (e) => {

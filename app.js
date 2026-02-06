@@ -1112,6 +1112,16 @@ function exportCanvas() {
     });
 
     const exportScale = 2;
+
+    // It's hard to get a perfect edge with scaled images. Taking a few pixels
+    // off ensures that there should be no white background lines.
+    const EDGE_CROP = 3; // pixels to crop from each edge of final export
+    const edgeCropStage = EDGE_CROP / exportScale;
+    minX += edgeCropStage;
+    minY += edgeCropStage;
+    maxX -= edgeCropStage;
+    maxY -= edgeCropStage;
+
     const exportWidth = Math.round((maxX - minX) * exportScale);
     const exportHeight = Math.round((maxY - minY) * exportScale);
 

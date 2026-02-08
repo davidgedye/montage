@@ -11,8 +11,8 @@
         <h1>Montage</h1>
         <div class="toolbar">
             <button id="add-btn" class="btn-large" title="Add an image or a .montage file">+</button>
-            <button id="save-btn" title="Export JPG (S)">Export</button>
             <button id="save-project-btn" title="Save Project (Ctrl+S)">Save</button>
+            <button id="save-btn" title="Export JPG (E)">Export</button>
             <button id="clear-btn" title="Clear All">Clear</button>
             <div class="toolbar-gap"></div>
             <button id="flip-h-btn" title="Flip Horizontal (H)">↔ Flip H</button>
@@ -40,8 +40,6 @@
         </div>
     </div>
 
-    <input type="file" id="file-input" accept="image/*,.heic,.heif,.montage" multiple>
-
     <div class="instructions">
         <span>Scroll: zoom</span>
         <span>Drag canvas: pan</span>
@@ -57,8 +55,9 @@
         <span>B: blend</span>
         <span>0-9: opacity</span>
         <span>X: bg</span>
-        <span>S: export</span>
+        <span>E: export</span>
         <span>Ctrl+S: save</span>
+        <span>Ctrl+Shift+S: save as</span>
         <span>Del: remove</span>
         <span>Ctrl+Z: undo</span>
         <span>Ctrl+Shift+Z: redo</span>

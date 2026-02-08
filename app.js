@@ -2,7 +2,6 @@
 const wrapper = document.getElementById('canvas-wrapper');
 const container = document.getElementById('canvas-container');
 const dropZone = document.getElementById('drop-zone');
-const fileInput = document.getElementById('file-input');
 const addBtn = document.getElementById('add-btn');
 const zoomLevelSpan = document.getElementById('zoom-level');
 
@@ -48,6 +47,8 @@ const MAX_UNDO_LEVELS = 30;
 let nudgeUndoTimeout = null;
 let nudgeUndoPushed = false;
 let hasUnsavedChanges = false;
+let currentProjectHandle = null;
+let currentProjectName = 'project.montage';
 
 // Constants
 const BASE_HANDLE_SIZE = 12;
@@ -110,6 +111,12 @@ function findImageById(imageId) {
     return imageLayer.children.find(child =>
         child instanceof Konva.Image && child.getAttr('imageId') === imageId
     );
+}
+
+function updateTitle(filename) {
+    if (filename) currentProjectName = filename;
+    document.title = filename ? `Montage \u2014 ${filename}` : 'Montage';
+    document.querySelector('header h1').textContent = filename ? `Montage \u2014 ${filename}` : 'Montage';
 }
 
 function getViewportCenter() {
@@ -1094,7 +1101,7 @@ function hideContextMenu() {
 // Export
 // ============================================
 
-function exportCanvas() {
+async function exportCanvas() {
     const images = imageLayer.children.filter(child => child instanceof Konva.Image);
     if (images.length === 0) {
         alert('No images to export');
@@ -1186,10 +1193,25 @@ function exportCanvas() {
         ctx.restore();
     });
 
-    const link = document.createElement('a');
-    link.download = 'montage-export.jpg';
-    link.href = exportCanvas.toDataURL('image/jpeg', 0.9);
-    link.click();
+    try {
+        const fileHandle = await window.showSaveFilePicker({
+            suggestedName: 'montage-export.jpg',
+            types: [{
+                description: 'JPEG Image',
+                accept: { 'image/jpeg': ['.jpg', '.jpeg'] }
+            }]
+        });
+
+        const blob = await new Promise(resolve => exportCanvas.toBlob(resolve, 'image/jpeg', 0.9));
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+    } catch (err) {
+        if (err.name !== 'AbortError') {
+            console.error('Error exporting:', err);
+            alert('Failed to export: ' + err.message);
+        }
+    }
 }
 
 // ============================================
@@ -1296,26 +1318,55 @@ async function saveProject() {
         return;
     }
 
+    // First save: show picker to get a file handle
+    if (!currentProjectHandle) {
+        try {
+            currentProjectHandle = await window.showSaveFilePicker({
+                suggestedName: currentProjectName,
+                types: [{
+                    description: 'Montage Project',
+                    accept: { 'application/octet-stream': ['.montage'] }
+                }]
+            });
+        } catch (err) {
+            if (err.name === 'AbortError') return;
+            console.error('Error picking save location:', err);
+            alert('Failed to save: ' + err.message);
+            return;
+        }
+    }
+
     showProgressModal('Saving Project...');
 
     try {
         const content = await serializeStateToZip(state);
 
+        updateProgress(95, 'Writing file...');
+
+        const writable = await currentProjectHandle.createWritable();
+        await writable.write(content);
+        await writable.close();
+
         updateProgress(100, 'Done!');
 
-        const link = document.createElement('a');
-        link.download = 'project.montage';
-        link.href = URL.createObjectURL(content);
-        link.click();
-        URL.revokeObjectURL(link.href);
-
         hasUnsavedChanges = false;
+        updateTitle(currentProjectHandle.name);
         setTimeout(hideProgressModal, 500);
 
     } catch (err) {
         hideProgressModal();
         console.error('Error saving project:', err);
         alert('Failed to save project: ' + err.message);
+    }
+}
+
+async function saveProjectAs() {
+    const oldHandle = currentProjectHandle;
+    currentProjectHandle = null; // Force picker
+    await saveProject();
+    // If user cancelled the picker, saveProject returned early without setting a handle
+    if (!currentProjectHandle) {
+        currentProjectHandle = oldHandle;
     }
 }
 
@@ -1507,8 +1558,37 @@ transformer.on('transform', updateCropHandles);
 transformer.on('transformend', updateCropHandles);
 
 // Button handlers
-addBtn.addEventListener('click', () => fileInput.click());
-fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+addBtn.addEventListener('click', async () => {
+    try {
+        const handles = await window.showOpenFilePicker({
+            multiple: true,
+            types: [
+                {
+                    description: 'Images & Montage Projects',
+                    accept: {
+                        'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.heic', '.heif'],
+                        'application/octet-stream': ['.montage']
+                    }
+                }
+            ]
+        });
+        const files = [];
+        for (const handle of handles) {
+            const file = await handle.getFile();
+            // If a .montage file is opened, store its handle for re-saving
+            if (isMontageFile(file) && handles.length === 1) {
+                currentProjectHandle = handle;
+                updateTitle(file.name);
+            }
+            files.push(file);
+        }
+        await handleFiles(files);
+    } catch (err) {
+        if (err.name !== 'AbortError') {
+            console.error('Error opening files:', err);
+        }
+    }
+});
 
 function toggleBackground() {
     document.body.classList.toggle('light-bg');
@@ -1535,6 +1615,11 @@ function clearCanvas() {
 
     // Reset unsaved changes flag
     hasUnsavedChanges = false;
+
+    // Reset project handle and title
+    currentProjectHandle = null;
+    currentProjectName = 'project.montage';
+    updateTitle();
 
     // Show drop zone
     dropZone.classList.add('empty');
@@ -1611,12 +1696,17 @@ document.addEventListener('keydown', (e) => {
         return;
     }
 
+    if ((e.key === 's' || e.key === 'S') && (e.ctrlKey || e.metaKey) && e.shiftKey) {
+        e.preventDefault();
+        saveProjectAs();
+        return;
+    }
     if ((e.key === 's' || e.key === 'S') && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         saveProject();
         return;
     }
-    if (e.key === 's' || e.key === 'S') {
+    if (e.key === 'e' || e.key === 'E') {
         e.preventDefault();
         exportCanvas();
         return;

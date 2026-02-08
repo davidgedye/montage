@@ -1195,6 +1195,7 @@ async function exportCanvas() {
 
     try {
         const fileHandle = await window.showSaveFilePicker({
+            id: 'export',
             suggestedName: 'montage-export.jpg',
             types: [{
                 description: 'JPEG Image',
@@ -1322,6 +1323,7 @@ async function saveProject() {
     if (!currentProjectHandle) {
         try {
             currentProjectHandle = await window.showSaveFilePicker({
+                id: 'project',
                 suggestedName: currentProjectName,
                 types: [{
                     description: 'Montage Project',
@@ -1561,6 +1563,7 @@ transformer.on('transformend', updateCropHandles);
 addBtn.addEventListener('click', async () => {
     try {
         const handles = await window.showOpenFilePicker({
+            id: 'open',
             multiple: true,
             types: [
                 {

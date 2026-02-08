@@ -580,6 +580,7 @@ function setBlendMode(mode) {
     pushUndo();
     node.setAttr('blendMode', mode);
     node.globalCompositeOperation(mode);
+    updateOpacityLabel(node);
     imageLayer.batchDraw();
 }
 
@@ -1199,12 +1200,13 @@ async function exportCanvas() {
         compCtx.restore();
     });
 
-    // Flatten onto white background for JPG export
+    // Flatten onto current background color for JPG export
+    const bgColor = document.body.classList.contains('light-bg') ? '#ffffff' : '#1a1a1a';
     const exportCanvas = document.createElement('canvas');
     exportCanvas.width = exportWidth;
     exportCanvas.height = exportHeight;
     const ctx = exportCanvas.getContext('2d');
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = bgColor;
     ctx.fillRect(0, 0, exportWidth, exportHeight);
     ctx.drawImage(compCanvas, 0, 0);
 
@@ -1652,6 +1654,8 @@ document.getElementById('rotate-r-btn').addEventListener('click', rotateRight);
 document.getElementById('duplicate-btn').addEventListener('click', duplicateImage);
 document.getElementById('totop-btn').addEventListener('click', bringToTop);
 document.getElementById('tobottom-btn').addEventListener('click', sendToBottom);
+document.getElementById('blend-btn').addEventListener('click', cycleBlendMode);
+document.getElementById('bg-btn').addEventListener('click', toggleBackground);
 document.getElementById('save-btn').addEventListener('click', exportCanvas);
 document.getElementById('save-project-btn').addEventListener('click', saveProject);
 document.getElementById('clear-btn').addEventListener('click', clearCanvas);

@@ -1200,15 +1200,76 @@ async function exportCanvas() {
         compCtx.restore();
     });
 
+    // Smart crop: trim thin strips where images are nearly but not perfectly
+    // aligned.  Uses image geometry (not pixels) so the per-image BLEED used
+    // to hide sub-pixel gaps doesn't mask the misalignment.
+    const MAX_TRIM = Math.max(20, Math.round(Math.max(exportWidth, exportHeight) * 0.01));
+    let cropLeft = 0, cropTop = 0, cropRight = exportWidth, cropBottom = exportHeight;
+
+    // Image rects in export-pixel space (no bleed)
+    const exportRects = images.map(img => {
+        const r = img.getClientRect();
+        return {
+            x: (r.x - minX) * exportScale,
+            y: (r.y - minY) * exportScale,
+            w: r.width * exportScale,
+            h: r.height * exportScale
+        };
+    });
+
+    // Check if a scan-line is fully covered by image rects.
+    // horizontal=true: row at y, covering x range [lo, hi]
+    // horizontal=false: column at x, covering y range [lo, hi]
+    function scanLineCovered(pos, lo, hi, horizontal) {
+        const intervals = [];
+        for (const r of exportRects) {
+            if (horizontal) {
+                if (pos >= r.y && pos < r.y + r.h) intervals.push([r.x, r.x + r.w]);
+            } else {
+                if (pos >= r.x && pos < r.x + r.w) intervals.push([r.y, r.y + r.h]);
+            }
+        }
+        intervals.sort((a, b) => a[0] - b[0]);
+        let covered = lo;
+        for (const [s, e] of intervals) {
+            if (s > covered + 0.5) return false;
+            covered = Math.max(covered, e);
+            if (covered >= hi - 0.5) return true;
+        }
+        return covered >= hi - 0.5;
+    }
+
+    // Top
+    for (let row = 0; row < MAX_TRIM && row < exportHeight; row++) {
+        if (scanLineCovered(row, 0, exportWidth, true)) { cropTop = row; break; }
+    }
+    // Bottom
+    for (let row = exportHeight - 1; row >= exportHeight - MAX_TRIM && row >= 0; row--) {
+        if (scanLineCovered(row, 0, exportWidth, true)) { cropBottom = row + 1; break; }
+    }
+    // Left (within already-cropped vertical range)
+    for (let col = 0; col < MAX_TRIM && col < exportWidth; col++) {
+        if (scanLineCovered(col, cropTop, cropBottom, false)) { cropLeft = col; break; }
+    }
+    // Right
+    for (let col = exportWidth - 1; col >= exportWidth - MAX_TRIM && col >= 0; col--) {
+        if (scanLineCovered(col, cropTop, cropBottom, false)) { cropRight = col + 1; break; }
+    }
+
+    console.log(`Export: ${exportWidth}×${exportHeight} → ${cropRight - cropLeft}×${cropBottom - cropTop} (smart crop: top=${cropTop} bottom=${exportHeight - cropBottom} left=${cropLeft} right=${exportWidth - cropRight}, threshold=${MAX_TRIM}px)`);
+
+    const croppedWidth = cropRight - cropLeft;
+    const croppedHeight = cropBottom - cropTop;
+
     // Flatten onto current background color for JPG export
     const bgColor = document.body.classList.contains('light-bg') ? '#ffffff' : '#1a1a1a';
     const exportCanvas = document.createElement('canvas');
-    exportCanvas.width = exportWidth;
-    exportCanvas.height = exportHeight;
+    exportCanvas.width = croppedWidth;
+    exportCanvas.height = croppedHeight;
     const ctx = exportCanvas.getContext('2d');
     ctx.fillStyle = bgColor;
-    ctx.fillRect(0, 0, exportWidth, exportHeight);
-    ctx.drawImage(compCanvas, 0, 0);
+    ctx.fillRect(0, 0, croppedWidth, croppedHeight);
+    ctx.drawImage(compCanvas, cropLeft, cropTop, croppedWidth, croppedHeight, 0, 0, croppedWidth, croppedHeight);
 
     try {
         const fileHandle = await window.showSaveFilePicker({

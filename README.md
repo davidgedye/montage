@@ -27,6 +27,29 @@ python3 -m http.server 8000
 # Then open http://localhost:8000
 ```
 
+## Batch Export
+
+Export all `.montage` files in a directory to JPGs using a headless browser.
+
+**Prerequisites:** Node 18+, Playwright, and Edge browser.
+
+```bash
+npm install playwright
+npx playwright install msedge
+```
+
+**Usage:**
+
+```bash
+node batch-export.js <input-dir> <output-dir>
+```
+
+**Example (WSL with Windows files):**
+
+```bash
+node batch-export.js "/mnt/c/Users/you/Pictures/montages/" ./exported/
+```
+
 ## Tech Stack
 
 - Vanilla HTML/CSS/JavaScript

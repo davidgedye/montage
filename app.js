@@ -1694,6 +1694,10 @@ function clearCanvas() {
     undoStack.length = 0;
     redoStack.length = 0;
 
+    // Reset viewport (pan and zoom)
+    stage.position({ x: 0, y: 0 });
+    stage.scale({ x: 1, y: 1 });
+
     // Reset unsaved changes flag
     hasUnsavedChanges = false;
 

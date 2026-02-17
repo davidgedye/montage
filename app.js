@@ -1274,7 +1274,9 @@ async function exportCanvas() {
     try {
         const fileHandle = await window.showSaveFilePicker({
             id: 'export',
-            suggestedName: 'montage-export.jpg',
+            suggestedName: currentProjectName !== 'project.montage'
+                ? currentProjectName.replace(/\.montage$/i, '.jpg')
+                : 'montage-export.jpg',
             types: [{
                 description: 'JPEG Image',
                 accept: { 'image/jpeg': ['.jpg', '.jpeg'] }
@@ -1706,8 +1708,9 @@ function clearCanvas() {
     currentProjectName = 'project.montage';
     updateTitle();
 
-    // Show drop zone
+    // Show drop zone with hint
     dropZone.classList.add('empty');
+    dropZone.querySelector('.drop-hint').style.display = 'block';
 
     imageLayer.batchDraw();
 }

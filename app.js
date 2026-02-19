@@ -1678,41 +1678,9 @@ function toggleBackground() {
 }
 
 function clearCanvas() {
-    if (hasUnsavedChanges) {
-        if (!confirm('You have unsaved changes. Are you sure you want to clear everything?')) {
-            return;
-        }
-    }
-
-    // Destroy all images
-    const images = imageLayer.children.filter(child => child instanceof Konva.Image);
-    images.forEach(img => img.destroy());
-
-    // Clear selection and crop handles
-    transformer.nodes([]);
-    removeCropHandles();
-
-    // Clear undo/redo stacks
-    undoStack.length = 0;
-    redoStack.length = 0;
-
-    // Reset viewport (pan and zoom)
-    stage.position({ x: 0, y: 0 });
-    stage.scale({ x: 1, y: 1 });
-
-    // Reset unsaved changes flag
+    if (hasUnsavedChanges && !confirm('You have unsaved changes. Are you sure you want to clear everything?')) return;
     hasUnsavedChanges = false;
-
-    // Reset project handle and title
-    currentProjectHandle = null;
-    currentProjectName = 'project.montage';
-    updateTitle();
-
-    // Show drop zone with hint
-    dropZone.classList.add('empty');
-    dropZone.querySelector('.drop-hint').style.display = 'block';
-
-    imageLayer.batchDraw();
+    location.reload();
 }
 
 document.getElementById('flip-h-btn').addEventListener('click', flipHorizontal);
